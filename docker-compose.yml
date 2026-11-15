@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: unaa
+      POSTGRES_PASSWORD: unaa
+      POSTGRES_DB: unaa
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unaa"]
+      interval: 3s
+      retries: 20
+  api:
+    build: ./backend
+    environment:
+      UNAA_DATABASE_URL: postgresql+psycopg://unaa:unaa@db:5432/unaa
+      UNAA_UPLOAD_DIR: /data/uploads
+    ports: ["8000:8000"]
+    volumes: ["uploads:/data/uploads"]
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  pgdata:
+  uploads:
