@@ -46,6 +46,14 @@ class Settings(BaseSettings):
         (None, 0.05),
     ]
 
+    # --- Тааруулалт ---
+    pickup_radius_m: int = 300  # зорчигч жолоочийн маршрутаас хэр хол зогсож болох
+    dropoff_radius_m: int = 1500  # очих газар маршрутаас хэр хол байж болох (маршрут дээр буулгана)
+    min_shared_m: int = 500  # хамт явах хамгийн бага зай
+    request_ttl_minutes: int = 30
+    tune_count: int = 8  # апп дахь аялгуу/өнгөний тоо
+    tune_radius_m: int = 1000  # энэ зайд байгаа хосууд өөр аялгуутай байна
+
     # --- Хязгаарууд ---
     max_topup_per_day: int = 500_000
     max_payout_per_day: int = 1_000_000

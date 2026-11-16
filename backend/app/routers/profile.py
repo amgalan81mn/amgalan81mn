@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from ..deps import Conf, CurrentUser, Db, can_drive
 from ..models import (
     DRIVER_DOCUMENTS,
+    PUBLIC_DOCUMENTS,
     USER_DOCUMENTS,
     VEHICLE_DOCUMENTS,
     AuditLog,
@@ -252,9 +253,17 @@ def submit_vehicle(vehicle_id: str, user: CurrentUser, db: Db) -> dict:
 def get_document(document_id: str, user: CurrentUser, db: Db, settings: Conf) -> Response:
     """Зургийг зөвхөн эзэн нь эсвэл админ үзнэ. Админы үзсэн бүрийг бүртгэнэ."""
     doc = db.get(Document, document_id)
-    if doc is None or (doc.user_id != user.id and not user.is_admin):
+    if doc is None:
         raise HTTPException(404, "Зураг олдсонгүй")
-    if doc.user_id != user.id:
+    allowed = doc.user_id == user.id or user.is_admin
+    # Аялалд хамт буй хүн нүүр зураг, машины зургийг харна (бие биеэ таних)
+    if not allowed and doc.kind in PUBLIC_DOCUMENTS:
+        from .rides import shares_trip
+
+        allowed = shares_trip(db, user.id, doc.user_id)
+    if not allowed:
+        raise HTTPException(404, "Зураг олдсонгүй")
+    if doc.user_id != user.id and user.is_admin:
         db.add(AuditLog(actor_id=user.id, action="view_document", target=doc.id, detail=doc.kind.value))
         db.commit()
     return Response(read_document(settings, doc), media_type=doc.content_type)

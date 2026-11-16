@@ -9,7 +9,9 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
+    JSON,
     Integer,
     String,
 )
@@ -276,3 +278,115 @@ class Payout(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (CheckConstraint("amount > 0", name="payout_amount_positive"),)
+
+
+# ---------------------------------------------------------------- Аялал
+
+
+class RouteStatus(str, enum.Enum):
+    active = "active"
+    ended = "ended"
+
+
+class DriverRoute(Base):
+    """Жолооч «Замдаа хүн авна» горимыг асаасан нэг удаагийн замнал."""
+
+    __tablename__ = "driver_routes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    driver_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    vehicle_id: Mapped[str] = mapped_column(ForeignKey("vehicles.id"))
+    # Google Directions-оос апп авсан маршрутын цэгүүд [[lat, lng], ...]
+    polyline: Mapped[list] = mapped_column(JSON)
+    length_m: Mapped[int] = mapped_column(Integer)
+    # Жолоочийн үнэ: үндсэн тарифыг хэдэн дахин үржүүлэх (1.0 = үндсэн). Хатуу хязгааргүй.
+    price_factor: Mapped[float] = mapped_column(Float, default=1.0)
+    seats_free: Mapped[int] = mapped_column(Integer)
+    progress_m: Mapped[float] = mapped_column(Float, default=0.0)  # жолооч маршрутын хаана явж байна
+    last_lat: Mapped[float | None] = mapped_column(Float)
+    last_lng: Mapped[float | None] = mapped_column(Float)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[RouteStatus] = mapped_column(_enum(RouteStatus), default=RouteStatus.active, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (CheckConstraint("seats_free >= 0", name="route_seats_nonneg"),)
+
+
+class TrackPoint(Base):
+    """Аюулгүй байдлын ул мөр: жолоочийн GPS цэг бүр хадгалагдана."""
+
+    __tablename__ = "track_points"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    route_id: Mapped[str] = mapped_column(ForeignKey("driver_routes.id"), index=True)
+    lat: Mapped[float] = mapped_column(Float)
+    lng: Mapped[float] = mapped_column(Float)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RequestStatus(str, enum.Enum):
+    open = "open"
+    matched = "matched"
+    cancelled = "cancelled"
+    expired = "expired"
+
+
+class RideRequest(Base):
+    """Зорчигчийн «авна» захиалга. Үүсэх үед мөнгө түгжигдэнэ."""
+
+    __tablename__ = "ride_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    passenger_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    pickup_lat: Mapped[float] = mapped_column(Float)
+    pickup_lng: Mapped[float] = mapped_column(Float)
+    dropoff_lat: Mapped[float] = mapped_column(Float)
+    dropoff_lng: Mapped[float] = mapped_column(Float)
+    direct_m: Mapped[int] = mapped_column(Integer)  # шулуун зай (лавлах)
+    seats: Mapped[int] = mapped_column(Integer)  # өөрөө + дагалдагчид
+    bid_seat_price: Mapped[int] = mapped_column(Integer)  # нэг суудалд төлөхөд бэлэн дээд үнэ
+    hold_id: Mapped[str] = mapped_column(ForeignKey("holds.id"))
+    status: Mapped[RequestStatus] = mapped_column(_enum(RequestStatus), default=RequestStatus.open, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("seats >= 1", name="request_seats_positive"),
+        CheckConstraint("bid_seat_price > 0", name="request_bid_positive"),
+    )
+
+
+class BookingStatus(str, enum.Enum):
+    matched = "matched"  # жолооч «авна» дарсан, дуу тоглож байна
+    boarded = "boarded"  # зорчигч «Суулаа» дарсан
+    completed = "completed"
+    cancelled = "cancelled"
+
+
+class Booking(Base):
+    __tablename__ = "bookings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    route_id: Mapped[str] = mapped_column(ForeignKey("driver_routes.id"), index=True)
+    request_id: Mapped[str] = mapped_column(ForeignKey("ride_requests.id"), index=True)
+    driver_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    passenger_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    seats: Mapped[int] = mapped_column(Integer)
+    agreed_seat_price: Mapped[int] = mapped_column(Integer)
+    agreed_distance_m: Mapped[int] = mapped_column(Integer)
+    occupancy_at_agreement: Mapped[int] = mapped_column(Integer)
+    pickup_along_m: Mapped[float] = mapped_column(Float)
+    dropoff_along_m: Mapped[float] = mapped_column(Float)
+    # Хоёр утсанд зэрэг тоглох аялгуу ба дэлгэцийн өнгө (ойролцоо хосуудад давхцахгүй)
+    tune: Mapped[int] = mapped_column(Integer)
+    hold_id: Mapped[str] = mapped_column(ForeignKey("holds.id"))
+    status: Mapped[BookingStatus] = mapped_column(_enum(BookingStatus), default=BookingStatus.matched, index=True)
+    board_along_m: Mapped[float | None] = mapped_column(Float)
+    alight_along_m: Mapped[float | None] = mapped_column(Float)
+    boarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fare_total: Mapped[int | None] = mapped_column(Integer)
+    commission: Mapped[int | None] = mapped_column(Integer)
+    cancelled_by: Mapped[str | None] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
