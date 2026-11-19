@@ -22,13 +22,20 @@ from pydantic import BaseModel, Field
 from .db import Database
 from .embedders import Embedder, get_embedder
 from .scoring import compute_stats, value_index
-from .vision import ImageError, decode_image, encode_jpeg, read_video_frames, select_scan_frames, sharpness
+from .storage import LocalStorage, Storage
+from .vision import (THUMB_MAX_SIDE, ImageError, decode_image, encode_webp, read_video_frames,
+                     select_scan_frames, sharpness)
 
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_VIDEO_BYTES = 150 * 1024 * 1024
 MAX_PHOTOS_PER_REQUEST = 10
+MAX_PHOTOS_PER_REVIEW = 3
+# Видео сканы кадруудаас зөвхөн эхний хэдийнх нь зургийг хадгална (харуулахад).
+# Бусдынх нь зөвхөн хээ хадгалагдана: зураг ~100KB, хээ ~1.5KB.
+SCAN_KEEP_FILES = 4
 
 SortKey = Literal["score", "value", "reviews", "fail_rate", "new"]
+ImageKind = Literal["product", "packaging"]
 
 
 class ReviewIn(BaseModel):
@@ -87,10 +94,11 @@ class VectorIndex:
         return sorted(best.items(), key=lambda kv: -kv[1])[:top]
 
 
-def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | None = None) -> FastAPI:
+def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | None = None,
+               storage: Storage | None = None) -> FastAPI:
     db = Database(db_path)
     media = Path(media_dir)
-    media.mkdir(parents=True, exist_ok=True)
+    store = storage or LocalStorage(media)
     emb = embedder or get_embedder()
     index = VectorIndex(db, emb.name)
 
@@ -112,8 +120,14 @@ def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | 
         return p
 
     def images_for(pid: int) -> list[dict]:
-        rows = db.all("SELECT id, file, source FROM product_images WHERE product_id = ? ORDER BY id", pid)
-        return [{"id": r["id"], "url": "/media/" + r["file"], "source": r["source"]} for r in rows]
+        rows = db.all("""SELECT id, kind, file, thumb, source FROM product_images
+                         WHERE product_id = ? AND file IS NOT NULL ORDER BY kind = 'product' DESC, id""", pid)
+        return [{"id": r["id"], "kind": r["kind"], "source": r["source"],
+                 "url": store.url(r["file"]), "thumb_url": store.url(r["thumb"])} for r in rows]
+
+    def review_photos(rid: int) -> list[dict]:
+        return [{"id": r["id"], "url": store.url(r["file"]), "thumb_url": store.url(r["thumb"])}
+                for r in db.all("SELECT * FROM review_images WHERE review_id = ? ORDER BY id", rid)]
 
     def category_median(category: str) -> float | None:
         prices = [r["price"] for r in db.all("SELECT price FROM products WHERE category = ? AND price > 0", category)]
@@ -123,10 +137,11 @@ def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | 
         stats = compute_stats(db.all("SELECT * FROM reviews WHERE product_id = ?", p["id"]))
         if p["category"] not in cache:
             cache[p["category"]] = category_median(p["category"])
-        first = db.one("SELECT file FROM product_images WHERE product_id = ? ORDER BY id LIMIT 1", p["id"])
+        first = db.one("""SELECT thumb FROM product_images WHERE product_id = ? AND thumb IS NOT NULL
+                          ORDER BY kind = 'product' DESC, id LIMIT 1""", p["id"])
         return {
             **p,
-            "image": "/media/" + first["file"] if first else None,
+            "image": store.url(first["thumb"]) if first else None,
             "stats": stats,
             "value": value_index(stats["score"], p["price"], cache[p["category"]]),
         }
@@ -148,21 +163,43 @@ def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | 
             raise HTTPException(413, f"Файл {limit // (1024 * 1024)}MB-аас бага байх ёстой")
         return data
 
-    def store_images(pid: int, rgbs: list[np.ndarray], source: str, sharp: list[float] | None = None,
-                     embs: np.ndarray | None = None) -> int:
+    def store_views(pid: int, rgbs: list[np.ndarray], *, kind: str, source: str,
+                    sharp: list[float] | None = None, embs: np.ndarray | None = None,
+                    keep_files: int | None = None) -> dict:
+        """Зураг/кадр бүрийн хээг хадгална. Бараг ижил зураг дахин ирвэл алгасна.
+        keep_files: эхний хэдэн зургийн файлыг хадгалах (None = бүгд)."""
         if embs is None:
             embs = emb.embed(rgbs)
+        existing = [np.frombuffer(r["vector"], np.float32) for r in db.all(
+            """SELECT e.vector FROM image_embeddings e JOIN product_images i ON i.id = e.image_id
+               WHERE i.product_id = ? AND e.model = ?""", pid, emb.name)]
+        added = files = skipped = 0
         for i, rgb in enumerate(rgbs):
-            file = f"{uuid.uuid4().hex}.jpg"
-            (media / file).write_bytes(encode_jpeg(rgb))
+            v = embs[i].astype(np.float32)
+            if existing and max(float(v @ e) for e in existing) >= emb.duplicate_threshold:
+                skipped += 1
+                continue
+            file = thumb = None
+            if keep_files is None or files < keep_files:
+                file = store.save(encode_webp(rgb), "webp")
+                thumb = store.save(encode_webp(rgb, THUMB_MAX_SIDE, 75), "webp")
+                files += 1
             image_id = db.run(
-                "INSERT INTO product_images (product_id, file, source, sharpness) VALUES (?, ?, ?, ?)",
-                pid, file, source, sharp[i] if sharp else sharpness(rgb),
+                "INSERT INTO product_images (product_id, kind, file, thumb, source, sharpness) VALUES (?, ?, ?, ?, ?, ?)",
+                pid, kind, file, thumb, source, sharp[i] if sharp else sharpness(rgb),
             )
-            db.run("INSERT INTO image_embeddings (image_id, model, vector) VALUES (?, ?, ?)",
-                   image_id, emb.name, embs[i].astype(np.float32).tobytes())
+            db.run("INSERT INTO image_embeddings (image_id, model, vector) VALUES (?, ?, ?)", image_id, emb.name, v.tobytes())
+            existing.append(v)
+            added += 1
         index.invalidate()
-        return len(rgbs)
+        return {"views_added": added, "files_saved": files, "duplicates_skipped": skipped}
+
+    def merge(*counts: dict) -> dict:
+        out = {"views_added": 0, "files_saved": 0, "duplicates_skipped": 0}
+        for c in counts:
+            for k in out:
+                out[k] += c.get(k, 0)
+        return out
 
     async def decode_photos(photos: list[UploadFile]) -> list[np.ndarray]:
         if len(photos) > MAX_PHOTOS_PER_REQUEST:
@@ -172,7 +209,7 @@ def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | 
         except ImageError as e:
             raise HTTPException(400, str(e))
 
-    async def process_scan(pid: int, video: UploadFile) -> int:
+    async def process_scan(pid: int, video: UploadFile) -> dict:
         with tempfile.NamedTemporaryFile(suffix=Path(video.filename or "v.mp4").suffix or ".mp4") as tmp:
             size = 0
             while chunk := await video.read(1024 * 1024):
@@ -185,8 +222,9 @@ def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | 
                 frames = select_scan_frames(read_video_frames(tmp.name), emb)
             except ImageError as e:
                 raise HTTPException(400, str(e))
-        return store_images(pid, [f.rgb for f in frames], "scan", [f.sharpness for f in frames],
-                            np.stack([f.embedding for f in frames]))
+        return store_views(pid, [f.rgb for f in frames], kind="product", source="scan",
+                           sharp=[f.sharpness for f in frames], embs=np.stack([f.embedding for f in frames]),
+                           keep_files=SCAN_KEEP_FILES)
 
     # ---------- API ----------
     @app.get("/api/health")
@@ -225,6 +263,7 @@ def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | 
         price: int | None = Form(None, ge=0),
         description: str = Form("", max_length=2000),
         photos: list[UploadFile] = File(default=[]),
+        packaging_photos: list[UploadFile] = File(default=[]),
         video: UploadFile | None = File(default=None),
     ):
         bc = barcode.strip() or None
@@ -232,25 +271,28 @@ def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | 
             existing = db.one("SELECT id FROM products WHERE barcode = ?", bc)
             raise HTTPException(409, {"message": "Энэ баркодтой бараа бүртгэлтэй байна", "id": existing["id"]})
         rgbs = await decode_photos(photos)
+        pack = await decode_photos(packaging_photos)
         pid = db.run(
             "INSERT INTO products (name, brand, model, category, barcode, price, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
             name.strip(), brand.strip(), model.strip(), category.strip(), bc, price, description.strip(),
         )
-        added = store_images(pid, rgbs, "photo") if rgbs else 0
+        counts = [store_views(pid, rgbs, kind="product", source="photo"),
+                  store_views(pid, pack, kind="packaging", source="photo")]
         if video is not None and video.filename:
-            added += await process_scan(pid, video)
-        return {"id": pid, "images_added": added}
+            counts.append(await process_scan(pid, video))
+        return {"id": pid, **merge(*counts)}
 
     @app.post("/api/products/{pid}/photos", status_code=201)
-    async def add_photos(pid: int, photos: list[UploadFile] = File(...)):
+    async def add_photos(pid: int, photos: list[UploadFile] = File(...), kind: ImageKind = Form("product")):
+        """Нэмэлт зураг. kind=packaging бол сав, баглаа боодлын зураг (дэлгүүрт хайрцгийг нь зурагдаж хайхад хэрэгтэй)."""
         get_product(pid)
-        return {"images_added": store_images(pid, await decode_photos(photos), "photo")}
+        return store_views(pid, await decode_photos(photos), kind=kind, source="photo")
 
     @app.post("/api/products/{pid}/scan", status_code=201)
     async def add_scan(pid: int, video: UploadFile = File(...)):
         """Барааг тал бүрээс нь бичсэн видео. Тод, өөр өнцгийн кадруудыг автоматаар сонгоно."""
         get_product(pid)
-        return {"images_added": await process_scan(pid, video)}
+        return await process_scan(pid, video)
 
     @app.get("/api/products/{pid}")
     def product_detail(pid: int):
@@ -261,6 +303,7 @@ def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | 
         for r in reviews:
             alt = r["better_alt_id"] and db.one("SELECT id, name, brand, model FROM products WHERE id = ?", r["better_alt_id"])
             r["better_alt"] = alt or None
+            r["photos"] = review_photos(r["id"])
 
         peers = sorted((summarize(x, cache) for x in db.all("SELECT * FROM products WHERE category = ?", p["category"])),
                        key=sorters["score"])
@@ -298,6 +341,19 @@ def create_app(db_path: str | Path, media_dir: str | Path, embedder: Embedder | 
             r.pros.strip(), r.cons.strip(), r.body.strip(), alt,
         )
         return {"id": rid}
+
+    @app.post("/api/reviews/{rid}/photos", status_code=201)
+    async def add_review_photos(rid: int, photos: list[UploadFile] = File(...)):
+        """Эвдэрсэн хэсгийн зураг (нотолгоо). Нэг сэтгэгдэлд дээд тал нь 3 зураг."""
+        if not db.one("SELECT id FROM reviews WHERE id = ?", rid):
+            raise HTTPException(404, "Сэтгэгдэл олдсонгүй")
+        have = db.one("SELECT COUNT(*) AS n FROM review_images WHERE review_id = ?", rid)["n"]
+        if have + len(photos) > MAX_PHOTOS_PER_REVIEW:
+            raise HTTPException(400, f"Нэг сэтгэгдэлд {MAX_PHOTOS_PER_REVIEW}-аас олонгүй зураг")
+        for rgb in await decode_photos(photos):
+            db.run("INSERT INTO review_images (review_id, file, thumb) VALUES (?, ?, ?)", rid,
+                   store.save(encode_webp(rgb), "webp"), store.save(encode_webp(rgb, THUMB_MAX_SIDE, 75), "webp"))
+        return {"photos": review_photos(rid)}
 
     @app.get("/api/products/{pid}/parts")
     def broken_parts(pid: int):

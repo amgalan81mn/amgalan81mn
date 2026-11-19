@@ -56,7 +56,9 @@ def test_full_flow_scan_search_review(client, tmp_path):
                         files=[("video", ("scan.avi", fh, "video/x-msvideo"))])
     assert r.status_code == 201, r.text
     a = r.json()["id"]
-    assert r.json()["images_added"] >= 3
+    # Олон өнцгийн хээ хадгалагдсан ч зургийн файл зөвхөн 4
+    assert r.json()["views_added"] >= 6
+    assert r.json()["files_saved"] == 4
 
     r = client.post("/api/products", data={"name": "Peeler B", "category": "Kitchen", "price": "15000"},
                     files=files(draw_object(BLUE, "ellipse")))
@@ -89,8 +91,10 @@ def test_full_flow_scan_search_review(client, tmp_path):
     assert client.get(f"/api/products/{a}/parts").json() == ["blade"]
     assert [x["id"] for x in client.get("/api/products", params={"category": "Kitchen"}).json()] == [b, a]
 
-    img_url = d["product"]["images"][0]["url"]
-    assert client.get(img_url).headers["content-type"] == "image/jpeg"
+    assert len(d["product"]["images"]) == 4
+    img = d["product"]["images"][0]
+    assert client.get(img["url"]).headers["content-type"] == "image/webp"
+    assert len(client.get(img["thumb_url"]).content) < len(client.get(img["url"]).content)
 
 
 def test_rejects_bad_input(client):
@@ -103,3 +107,30 @@ def test_rejects_bad_input(client):
     assert client.post("/api/products/9999/reviews", json={"rating": 3}).status_code == 404
     assert client.post(f"/api/products/{pid}/scan",
                        files=[("video", ("v.mp4", b"garbage", "video/mp4"))]).status_code == 400
+
+
+def test_duplicates_packaging_and_review_photos(client):
+    red = draw_object(RED)
+    r = client.post("/api/products", data={"name": "x", "category": "y"}, files=files(red, red))
+    pid = r.json()["id"]
+    assert r.json()["views_added"] == 1 and r.json()["duplicates_skipped"] == 1
+    # Дахин ижил зураг ирвэл хадгалахгүй
+    assert client.post(f"/api/products/{pid}/photos", files=files(red)).json()["duplicates_skipped"] == 1
+
+    # Сав баглаа боодлын зураг: хайлтад ашиглагдана, бараа зургийн дараа харагдана
+    box = draw_object(BLUE, "ellipse")
+    assert client.post(f"/api/products/{pid}/photos", files=files(box), data={"kind": "packaging"}).status_code == 201
+    images = client.get(f"/api/products/{pid}").json()["product"]["images"]
+    assert [i["kind"] for i in images] == ["product", "packaging"]
+    found = client.post("/api/search/image", files=files(box)).json()["results"]
+    assert found[0]["id"] == pid and found[0]["is_match"]
+    assert client.post(f"/api/products/{pid}/photos", files=files(box), data={"kind": "receipt"}).status_code == 422
+
+    # Эвдрэлийн зураг: нэг сэтгэгдэлд 3 хүртэл
+    rid = client.post(f"/api/products/{pid}/reviews", json={"rating": 1, "broke": True, "broken_part": "ир"}).json()["id"]
+    broken = [draw_object((90, 90, 90), angle=a) for a in (0, 30, 60)]
+    assert len(client.post(f"/api/reviews/{rid}/photos", files=files(*broken)).json()["photos"]) == 3
+    assert client.post(f"/api/reviews/{rid}/photos", files=files(red)).status_code == 400
+    assert client.post("/api/reviews/999/photos", files=files(red)).status_code == 404
+    review = client.get(f"/api/products/{pid}").json()["reviews"][0]
+    assert len(review["photos"]) == 3

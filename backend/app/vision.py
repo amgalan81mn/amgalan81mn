@@ -18,6 +18,7 @@ from .embedders import Embedder
 
 MAX_PIXELS = 40_000_000
 STORE_MAX_SIDE = 1024
+THUMB_MAX_SIDE = 320
 
 
 class ImageError(ValueError):
@@ -38,11 +39,12 @@ def decode_image(data: bytes) -> np.ndarray:
     return np.asarray(im)
 
 
-def encode_jpeg(rgb: np.ndarray, max_side: int = STORE_MAX_SIDE) -> bytes:
+def encode_webp(rgb: np.ndarray, max_side: int = STORE_MAX_SIDE, quality: int = 80) -> bytes:
+    """WebP нь ижил чанартай JPEG-ээс ~40% бага зай эзэлнэ."""
     im = Image.fromarray(rgb)
-    im.thumbnail((max_side, max_side))
+    im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    im.save(buf, "JPEG", quality=85)
+    im.save(buf, "WEBP", quality=quality, method=4)
     return buf.getvalue()
 
 

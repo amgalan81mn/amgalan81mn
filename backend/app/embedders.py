@@ -22,6 +22,7 @@ class Embedder(Protocol):
     name: str
     dim: int
     match_threshold: float  # энэ утгаас дээш бол "ижил бараа" гэж үзнэ
+    duplicate_threshold: float  # энэ утгаас дээш бол давхардсан зураг
 
     def embed(self, images: list[np.ndarray]) -> np.ndarray:
         """RGB uint8 зургууд → (N, dim) float32, L2-нормчилсон."""
@@ -72,6 +73,7 @@ class BasicEmbedder:
     name = "basic-v1"
     dim = 48 + 64
     match_threshold = float(os.environ.get("MATCH_THRESHOLD_BASIC", 0.9))
+    duplicate_threshold = 0.995  # үүнээс дээш бол бараг ижил зураг: дахин хадгалахгүй
 
     def embed(self, images: list[np.ndarray]) -> np.ndarray:
         return np.stack([self._one(im) for im in images]) if images else np.zeros((0, self.dim), np.float32)
@@ -106,6 +108,7 @@ class BasicEmbedder:
 
 class Dinov2Embedder:
     match_threshold = float(os.environ.get("MATCH_THRESHOLD_DINOV2", 0.6))
+    duplicate_threshold = 0.97
 
     def __init__(self, model_id: str | None = None):
         import torch  # noqa: F401 — заавал биш сан, зөвхөн энэ загварт хэрэгтэй

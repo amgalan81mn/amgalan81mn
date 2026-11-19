@@ -27,11 +27,15 @@ CREATE TABLE IF NOT EXISTS products (
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode) WHERE barcode IS NOT NULL;
 
--- Барааны зураг. Видео скан хийхэд олон өнцгийн кадр энд хадгалагдана.
+-- Барааны "харагдац" (view): нэг зураг эсвэл видео сканы нэг кадр.
+-- Таних ажилд зөвхөн хээ (image_embeddings) хэрэгтэй. Тиймээс сканы ихэнх кадрын
+-- зургийг хадгалахгүй (file = NULL), зөвхөн харуулахад хэрэгтэй хэдийг нь хадгална.
 CREATE TABLE IF NOT EXISTS product_images (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    file        TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'product', -- 'product' | 'packaging' (сав, баглаа боодол)
+    file        TEXT,                            -- харуулах зураг (WebP, 1024px); NULL = зөвхөн хээ
+    thumb       TEXT,                            -- жагсаалтын жижиг зураг (WebP, 320px)
     source      TEXT NOT NULL DEFAULT 'photo',   -- 'photo' | 'scan'
     sharpness   REAL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -62,6 +66,16 @@ CREATE TABLE IF NOT EXISTS reviews (
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_id);
+
+-- Сэтгэгдлийн зураг: юу нь эвдэрсний нотолгоо. Таних хээ хэрэггүй.
+CREATE TABLE IF NOT EXISTS review_images (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_id   INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    file        TEXT NOT NULL,
+    thumb       TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_images_review ON review_images(review_id);
 """
 
 
