@@ -1,0 +1,23 @@
+{
+  "name": "baraa-toli",
+  "version": "0.1.0",
+  "description": "Худалдаж авахаасаа өмнө барааны бодит чанар, эвдрэл, хэрэглэгчийн санал хүсэлтийг харах платформ",
+  "main": "server/index.js",
+  "private": true,
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "seed": "node --disable-warning=ExperimentalWarning scripts/seed.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amgalan81mn/amgalan81mn.git"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
