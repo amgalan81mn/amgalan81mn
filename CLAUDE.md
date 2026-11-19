@@ -13,7 +13,11 @@
 
 - Хэрэглэгчийн D диск дээр TTS зэрэг олон файлтай төслүүд байна. Тэдгээрийг
   `tools/checkpoint.sh` (алхам бүрийг `step-NNN` tag-аар хадгалах, сэргээх) болон
-  `templates/tts.gitignore`-оор GitHub-тай холбоно. Заавар: docs-ийн 7-р хэсэг.
+  `templates/gitignore/tts.gitignore`-оор GitHub-тай холбоно. Заавар: docs-ийн 7-р хэсэг.
+
+- Энэ repo нь бусад төслүүдэд ашиглах **хэрэгслийн багц** бас мөн: `tools/new-project.sh`,
+  `tools/checkpoint.sh`, `templates/`, `claude-setup/` (хэрэглэгчийн компьютерт `~/project-toolkit`
+  болж суудаг). Эдгээрийг өөрчилбөл `main` руу push хийнэ, учир нь суулгагч `main`-аас татдаг.
 
 ## Энэ repo доторх төслүүд
 

@@ -1,0 +1,21 @@
+# --- Бүх төсөлд: GitHub-д оруулахгүй зүйлс ---
+# Нууц (хэзээ ч commit хийхгүй)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Систем, засварлагч
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/settings.json
+
+# Түр файл
+*.log
+*.tmp
+*.bak
