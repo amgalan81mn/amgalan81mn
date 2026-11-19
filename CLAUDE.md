@@ -14,12 +14,13 @@
 ## Энэ repo доторх төслүүд
 
 Нэг repo (`amgalan81mn/amgalan81mn`) дотор хоёр тусдаа төсөл өөр өөр branch дээр байна.
-Түүх нь холбоогүй тул **хоорондоо merge хийхгүй.**
+Түүх нь холбоогүй тул **хоорондоо merge хийхгүй.** `claude/...` branch бол түр ажлын нэр;
+дууссан ажлыг дээрх тогтвортой branch руу оруулна.
 
 | Төсөл | Branch | Агуулга |
 |---|---|---|
-| **Бараа Толь** — барааны чанар, эдэлгээний туршлага | `claude/wizardly-gauss-9mxhof` (энэ branch) | `backend/` FastAPI, `prototype-web/` Node.js архив |
-| **Унаа (Dohulehu)** — замдаа хүн авах апп | `claude/internet-connected-vehicle-seating-7m96tq` | `backend/` FastAPI + PostgreSQL, `app/` Flutter |
+| **Бараа Толь** — барааны чанар, эдэлгээний туршлага | `main` | `backend/` FastAPI, `prototype-web/` Node.js архив |
+| **Унаа (Dohulehu)** — замдаа хүн авах апп | `unaa` | `backend/` FastAPI + PostgreSQL, `app/` Flutter |
 
 ## Бараа Толь — ажиллуулах, шалгах
 
