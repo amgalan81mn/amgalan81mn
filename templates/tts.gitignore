@@ -1,0 +1,40 @@
+# TTS төсөлд зориулсан .gitignore — төслийнхөө үндсэн хавтсанд ".gitignore" нэрээр хуулна.
+# Энд жагсаасан файлууд GitHub-д орохгүй. Тэдгээрийн жагсаалт, sha256 нь
+# .checkpoint/large-files.tsv-д бичигдэх тул алдсан эсэхийг "checkpoint.sh verify" шалгана.
+
+# Python орчин
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Сургасан загварын жин (Drive эсвэл Hugging Face Hub-д хадгална)
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.onnx
+*.bin
+checkpoints/
+models/
+runs/
+logs/
+lightning_logs/
+wandb/
+
+# Аудио, датасет (эх бичлэгийг Drive-д нөөцөлнө)
+*.wav
+*.flac
+*.mp3
+*.ogg
+*.npy
+data/
+datasets/
+dataset/
+outputs/
+output/
+
+# Нууц
+.env
+*.key
