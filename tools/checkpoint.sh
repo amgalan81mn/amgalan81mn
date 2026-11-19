@@ -40,6 +40,27 @@ write_manifest() {
   } >"$MANIFEST"
 }
 
+write_env() {
+  # Дахин сургахад хэрэгтэй орчны мэдээлэл: Python, сангуудын яг хувилбар, GPU, CUDA
+  mkdir -p .checkpoint
+  local py=""
+  for c in .venv/bin/python .venv/Scripts/python.exe venv/bin/python venv/Scripts/python.exe python3 python; do
+    if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then py="$c"; break; fi
+  done
+  {
+    echo "date: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "os: $(uname -srm 2>/dev/null || echo unknown)"
+    [ -n "$py" ] && echo "python: $("$py" -V 2>&1)"
+    command -v nvidia-smi >/dev/null 2>&1 && \
+      echo "gpu: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | paste -sd';' -)"
+    command -v nvcc >/dev/null 2>&1 && echo "cuda: $(nvcc --version | tail -1)"
+  } >.checkpoint/environment.txt
+  if [ -n "$py" ]; then
+    "$py" -m pip freeze 2>/dev/null >.checkpoint/requirements.lock || true
+    [ -s .checkpoint/requirements.lock ] || rm -f .checkpoint/requirements.lock
+  fi
+}
+
 check_big_staged() {
   local limit=$((BIG_LIMIT_MB * 1024 * 1024)) bad=0 f
   while IFS= read -r -d '' f; do
@@ -63,6 +84,7 @@ case "$cmd" in
   save)
     msg="${1:-}"; [ -n "$msg" ] || die 'тайлбар бичнэ үү: tools/checkpoint.sh save "Юу хийсэн"'
     write_manifest
+    write_env
     git add -A
     check_big_staged
     step=$(next_step)
