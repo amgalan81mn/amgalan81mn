@@ -82,6 +82,7 @@ def final_fare(
     seats: int,
     segments: list[Segment],
     settings: Settings,
+    early_exit_floor: float | None = None,
 ) -> Fare:
     """Буух үеийн эцсийн төлбөр.
 
@@ -115,7 +116,8 @@ def final_fare(
     early = travelled < agreed_distance_m
     per_seat = _round(cost)
     if early:
-        floor = _round(price * Decimal(str(settings.early_exit_min_fraction)))
+        fraction = settings.early_exit_min_fraction if early_exit_floor is None else early_exit_floor
+        floor = _round(price * Decimal(str(fraction)))
         per_seat = max(per_seat, floor)
     per_seat = min(per_seat, agreed_seat_price)
     total = per_seat * seats

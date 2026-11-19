@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from .. import geo, ledger, market, pricing, rides
+from ..config import get_settings
 from ..deps import Conf, CurrentUser, Db
 from ..models import (
     PUBLIC_DOCUMENTS,
@@ -17,6 +18,8 @@ from ..models import (
     DocumentKind,
     DriverRoute,
     Hold,
+    Journey,
+    JourneyStatus,
     RequestStatus,
     RideRequest,
     RouteStatus,
@@ -76,9 +79,15 @@ def booking_view(db: Db, b: Booking, viewer: User) -> dict:
         "pickup": {"lat": req.pickup_lat, "lng": req.pickup_lng},
         "dropoff_on_route": {"lat": drop.point[0], "lng": drop.point[1]} if drop else None,
         "fare_total": b.fare_total,
-        "refund": None if b.fare_total is None else hold.amount - b.fare_total,
+        # Аянд «буцсан» мөнгө хэтэвчинд биш, дараагийн машинд зориулж түгжээтэй үлдэнэ
+        "refund": None
+        if b.fare_total is None
+        else (b.agreed_seat_price * b.seats if b.journey_id else hold.amount) - b.fare_total,
         "cancelled_by": b.cancelled_by,
+        "journey_id": b.journey_id,
     }
+    if b.status == BookingStatus.boarded:
+        view["jammed"] = rides.route_jammed(db, route, get_settings())
     if viewer.id == b.passenger_id:
         driver = db.get(User, b.driver_id)
         vehicle = db.get(Vehicle, route.vehicle_id)
@@ -262,7 +271,8 @@ class RequestIn(BaseModel):
     pickup: LatLng
     dropoff: LatLng
     seats: int = Field(1, ge=1, le=8, description="Өөрөө болон дагалдах хүмүүс")
-    bid_seat_price: int = Field(gt=0)
+    bid_seat_price: int = Field(gt=0, description="Аян бол очих газар хүртэлх нийт төсөв (нэг хүнд)")
+    multi_leg: bool = Field(False, description="Олон машинаар дамжиж болно (аян)")
 
 
 @router.get("/rides/quote")
@@ -320,6 +330,7 @@ def create_request(body: RequestIn, user: CurrentUser, db: Db, settings: Conf) -
             seats=body.seats,
             bid_seat_price=body.bid_seat_price,
             settings=settings,
+            multi_leg=body.multi_leg,
         ),
     )
     return request_view(db, req, user)
@@ -389,6 +400,89 @@ def passenger_cancel(booking_id: str, user: CurrentUser, db: Db) -> dict:
         return rides.cancel_booking(db, booking, route, "passenger")
 
     return booking_view(db, run(db, go), user)
+
+
+# ------------------------------------------------------------------ аян
+
+
+def _own_journey(db: Db, user: User, journey_id: str) -> Journey:
+    j = db.scalars(select(Journey).where(Journey.id == journey_id).with_for_update()).first()
+    if j is None or j.passenger_id != user.id:
+        raise rides.RideError(404, "journey", "Аян олдсонгүй")
+    return j
+
+
+def journey_view(db: Db, j: Journey, user: User, settings) -> dict:
+    hold = db.get(Hold, j.hold_id)
+    legs = db.scalars(
+        select(Booking).where(Booking.journey_id == j.id, Booking.status == BookingStatus.completed).order_by(Booking.completed_at)
+    ).all()
+    req = rides.journey_request(db, j) if j.status == JourneyStatus.active else None
+    active = db.scalars(
+        select(Booking).where(Booking.journey_id == j.id, Booking.status.in_(rides.ACTIVE_BOOKING))
+    ).first()
+    ahead = None
+    if j.status == JourneyStatus.active:
+        if active and active.status == BookingStatus.boarded:
+            route = db.get(DriverRoute, active.route_id)
+            if route.last_lat is not None:
+                ahead = rides.drivers_ahead(db, j, (route.last_lat, route.last_lng), route.id, settings)
+        elif req is not None and req.status == RequestStatus.open:
+            ahead = rides.drivers_ahead(db, j, (req.pickup_lat, req.pickup_lng), None, settings)
+    return {
+        "id": j.id,
+        "status": j.status.value,
+        "seats": j.seats,
+        "dropoff": {"lat": j.dropoff_lat, "lng": j.dropoff_lng},
+        "budget_seat_price": j.bid_seat_price,
+        "budget_left": hold.amount if hold.status.value == "active" else 0,
+        "remaining_m": round(geo.haversine_m((req.pickup_lat, req.pickup_lng), (j.dropoff_lat, j.dropoff_lng)))
+        if req
+        else None,
+        "legs": [
+            {
+                "booking_id": b.id,
+                "plate": db.get(Vehicle, db.get(DriverRoute, b.route_id).vehicle_id).plate,
+                "fare_total": b.fare_total,
+                "distance_m": round((b.alight_along_m or 0) - (b.board_along_m or 0)),
+            }
+            for b in legs
+        ],
+        "request": request_view(db, req, user) if req else None,
+        # Түгжрэлд байх үед: урд нь таныг дөхүүлж чадах хэдэн жолооч байна
+        "drivers_ahead": ahead,
+    }
+
+
+@router.get("/rides/journeys/current")
+def current_journey(user: CurrentUser, db: Db, settings: Conf) -> dict | None:
+    run(db, lambda: rides.expire_requests(db))
+    j = rides.active_journey(db, user.id)
+    if j is None:
+        j = db.scalars(
+            select(Journey).where(Journey.passenger_id == user.id).order_by(Journey.created_at.desc())
+        ).first()
+        if j is None or j.finished_at is None or (rides._now() - j.finished_at).total_seconds() > 600:
+            return None
+    return journey_view(db, j, user, settings)
+
+
+@router.post("/rides/journeys/{journey_id}/position")
+def journey_position(journey_id: str, body: LatLng, user: CurrentUser, db: Db, settings: Conf) -> dict:
+    """Аяны үед зорчигчийн утас байршлаа тогтмол илгээнэ (явган явах үед суух цэг хамт шилжинэ)."""
+
+    def go():
+        j = _own_journey(db, user, journey_id)
+        rides.journey_ping(db, j, body.lat, body.lng, settings)
+        return j
+
+    return journey_view(db, run(db, go), user, settings)
+
+
+@router.post("/rides/journeys/{journey_id}/finish")
+def finish_journey(journey_id: str, user: CurrentUser, db: Db, settings: Conf) -> dict:
+    j = run(db, lambda: rides.finish_journey(db, _own_journey(db, user, journey_id), settings))
+    return journey_view(db, j, user, settings)
 
 
 # ------------------------------------------------------------------ зах зээл

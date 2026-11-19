@@ -28,10 +28,13 @@ class _PassengerScreenState extends State<PassengerScreen> {
   final _tune = TunePlayer();
   final _bid = TextEditingController();
   Timer? _poll;
+  Timer? _ping;
 
   LatLng? _pickup;
   LatLng? _dropoff;
   int _seats = 1;
+  bool _multiLeg = true; // олон машинаар дамжиж болно
+  Map<String, dynamic>? _journey; // идэвхтэй эсвэл саяхан дууссан аян
   Map<String, dynamic>? _quote;
   Map<String, dynamic>? _request; // одоогийн захиалга
   Map<String, dynamic>? _finished; // дууссан аяллын дүн
@@ -43,11 +46,25 @@ class _PassengerScreenState extends State<PassengerScreen> {
     _locate();
     _refresh();
     _poll = Timer.periodic(AppConfig.pollInterval, (_) => _refresh());
+    // Аяны үед байршлаа илгээнэ: явганаар алхахад суух цэг хамт шилжиж, жолооч нарт зөв харагдана
+    _ping = Timer.periodic(AppConfig.positionInterval, (_) => _sendPosition());
+  }
+
+  Future<void> _sendPosition() async {
+    final j = _journey;
+    if (j == null || j['status'] != 'active') return;
+    final here = await Location.current();
+    if (here == null) return;
+    try {
+      final r = await Api.instance.post('/rides/journeys/${j['id']}/position', {'lat': here.latitude, 'lng': here.longitude});
+      if (mounted) setState(() => _journey = r as Map<String, dynamic>);
+    } catch (_) {}
   }
 
   @override
   void dispose() {
     _poll?.cancel();
+    _ping?.cancel();
     _tune.dispose();
     super.dispose();
   }
@@ -67,9 +84,18 @@ class _PassengerScreenState extends State<PassengerScreen> {
   Future<void> _refresh() async {
     try {
       final r = await Api.instance.get('/rides/requests/current');
+      final j = await Api.instance.get('/rides/journeys/current');
       if (!mounted) return;
       final previous = _request?['booking'] as Map<String, dynamic>?;
-      setState(() => _request = r as Map<String, dynamic>?);
+      final wasActive = _journey?['status'] == 'active';
+      setState(() {
+        _request = r as Map<String, dynamic>?;
+        _journey = j as Map<String, dynamic>?;
+      });
+      if (wasActive && _journey?['status'] == 'finished') {
+        setState(() => _finished = {'journey': _journey});
+        return;
+      }
       final booking = _request?['booking'] as Map<String, dynamic>?;
       if (booking != null && booking['status'] == 'matched') {
         _tune.play(booking['tune'] as int);
@@ -77,7 +103,7 @@ class _PassengerScreenState extends State<PassengerScreen> {
         _tune.stop();
       }
       // Жолооч маршрутаа дуусгаж буулгасан бол дүнг харуулна
-      if (r == null && previous != null && previous['status'] == 'boarded') {
+      if (r == null && _journey == null && previous != null && previous['status'] == 'boarded') {
         final done = await Api.instance.get('/rides/bookings/${previous['id']}');
         if (mounted) setState(() => _finished = done as Map<String, dynamic>);
       }
@@ -126,6 +152,7 @@ class _PassengerScreenState extends State<PassengerScreen> {
         'dropoff': {'lat': _dropoff!.latitude, 'lng': _dropoff!.longitude},
         'seats': _seats,
         'bid_seat_price': bid,
+        'multi_leg': _multiLeg,
       });
       await _refresh();
     } on ApiError catch (e) {
@@ -256,6 +283,14 @@ class _PassengerScreenState extends State<PassengerScreen> {
         ),
       ]),
       const Text('Өндөр үнэ тавибал жолоочид түрүүлж харагдана.', style: TextStyle(fontSize: 12)),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        dense: true,
+        value: _multiLeg,
+        onChanged: (v) => setState(() => _multiLeg = v),
+        title: const Text('Олон машинаар дамжиж болно'),
+        subtitle: const Text('Хүргэхгүй ч дөхүүлэх машинд сууна. Түгжрэлд бууж, өөр машинд сууж үргэлжлүүлнэ.'),
+      ),
       const SizedBox(height: 8),
       FilledButton(
         onPressed: _busy || _pickup == null || _dropoff == null ? null : _submit,
@@ -264,17 +299,35 @@ class _PassengerScreenState extends State<PassengerScreen> {
     ]);
   }
 
-  Widget _waitingPanel() => Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        const LinearProgressIndicator(),
-        const SizedBox(height: 12),
-        Text('Чиглэлийн жолооч хайж байна… (${_request!['seats']} хүн, нэг хүн ${money(_request!['bid_seat_price'])})',
-            textAlign: TextAlign.center),
-        const SizedBox(height: 8),
-        OutlinedButton(
-          onPressed: _busy ? null : () => _act(() => Api.instance.post('/rides/requests/${_request!['id']}/cancel')),
-          child: const Text('Цуцлах'),
+  Widget _waitingPanel() {
+    final j = _journey;
+    final ahead = j?['drivers_ahead'] as Map<String, dynamic>?;
+    final legs = (j?['legs'] as List?) ?? [];
+    return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      const LinearProgressIndicator(),
+      const SizedBox(height: 12),
+      if (j != null && legs.isNotEmpty)
+        Text('Аян үргэлжилж байна: ${legs.length} машин солигдсон · үлдсэн ${km(j['remaining_m'])}',
+            textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold)),
+      Text('Чиглэлийн жолооч хайж байна… (${_request!['seats']} хүн, нэг хүн ${money(_request!['bid_seat_price'])})',
+          textAlign: TextAlign.center),
+      if (ahead != null)
+        Text(
+          ahead['count'] == 0 ? 'Ойролцоо таарах жолооч одоогоор алга' : 'Ойролцоо ${ahead['count']} жолооч таны чиглэлд явж байна',
+          textAlign: TextAlign.center,
         ),
-      ]);
+      if (j != null) const Text('Алхаж байгаа бол суух цэг тань таныг дагаж шилжинэ.', textAlign: TextAlign.center, style: TextStyle(fontSize: 12)),
+      const SizedBox(height: 8),
+      OutlinedButton(
+        onPressed: _busy
+            ? null
+            : () => _act(() => j != null
+                ? Api.instance.post('/rides/journeys/${j['id']}/finish')
+                : Api.instance.post('/rides/requests/${_request!['id']}/cancel')),
+        child: Text(j != null ? 'Аяныг дуусгах (үлдсэн мөнгө буцна)' : 'Цуцлах'),
+      ),
+    ]);
+  }
 
   Widget _bookingPanel(Map<String, dynamic> b) {
     final driver = b['driver'] as Map<String, dynamic>;
@@ -330,11 +383,22 @@ class _PassengerScreenState extends State<PassengerScreen> {
               ),
             ),
           ])
-        else
+        else ...[
+          if (b['jammed'] == true && b['journey_id'] != null)
+            Container(
+              padding: const EdgeInsets.all(8),
+              margin: const EdgeInsets.only(bottom: 8),
+              color: Colors.orange.withValues(alpha: 0.2),
+              child: Text(
+                'Түгжрэлд орлоо. ${(_journey?['drivers_ahead']?['count'] ?? 0) > 0 ? 'Урд ${_journey!['drivers_ahead']['count']} жолооч таны чиглэлд хөдөлж байна. ' : ''}'
+                'Бууж алхаад дараагийн машинд сууж болно.',
+              ),
+            ),
           FilledButton(
             onPressed: _busy ? null : () => _alight(b),
-            child: const Text('Буулаа'),
+            child: Text(b['journey_id'] != null ? 'Буулаа (аян үргэлжилнэ)' : 'Буулаа'),
           ),
+        ],
       ]),
     );
   }
@@ -343,12 +407,44 @@ class _PassengerScreenState extends State<PassengerScreen> {
         final here = await Location.current();
         final done = await Api.instance.post('/rides/bookings/${b['id']}/alight', {
           if (here != null) 'position': {'lat': here.latitude, 'lng': here.longitude},
-        });
-        setState(() => _finished = done as Map<String, dynamic>);
+        }) as Map<String, dynamic>;
+        await _tune.stop();
+        if (b['journey_id'] != null) {
+          // Энэ машины тооцоо хийгдлээ; аян дуусаагүй бол дараагийн машин хайлт автоматаар эхэлсэн
+          final j = await Api.instance.get('/rides/journeys/current') as Map<String, dynamic>?;
+          if (j != null && j['status'] == 'active') {
+            if (mounted) showInfo(context, 'Энэ машинд ${money(done['fare_total'])} төллөө. Дараагийн машин хайж байна');
+            setState(() => _journey = j);
+            return;
+          }
+          setState(() => _finished = {'journey': j});
+          return;
+        }
+        setState(() => _finished = done);
       });
 
   Widget _finishedPanel() {
     final f = _finished!;
+    final j = f['journey'] as Map<String, dynamic>?;
+    if (f.containsKey('journey')) {
+      final legs = ((j?['legs'] as List?) ?? []).cast<Map<String, dynamic>>();
+      final total = legs.fold<int>(0, (a, l) => a + ((l['fare_total'] as num?)?.toInt() ?? 0));
+      return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text('Аян дууслаа', style: Theme.of(context).textTheme.titleLarge, textAlign: TextAlign.center),
+        for (final l in legs) Text('${l['plate']} · ${km(l['distance_m'])} · ${money(l['fare_total'])}', textAlign: TextAlign.center),
+        Text('Нийт: ${money(total)}. Үлдсэн мөнгө хэтэвчинд буцсан.', textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: () => setState(() {
+            _finished = null;
+            _journey = null;
+            _dropoff = null;
+            _quote = null;
+          }),
+          child: const Text('Болсон'),
+        ),
+      ]);
+    }
     return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Text('Аялал дууслаа', style: Theme.of(context).textTheme.titleLarge, textAlign: TextAlign.center),
       Text('Төлсөн: ${money(f['fare_total'])}', textAlign: TextAlign.center, style: const TextStyle(fontSize: 18)),

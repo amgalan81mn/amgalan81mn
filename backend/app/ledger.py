@@ -224,6 +224,48 @@ def settle_hold(
     return hold, fee
 
 
+def capture_from_hold(
+    db: Session, hold_id: str, fare: int, driver_user_id: str, key: str, settings: Settings
+) -> tuple[Hold, int]:
+    """Аяны нэг хэсэг: түгжээг хаалгүйгээр `fare`-г авч жолоочид шилжүүлнэ. Үлдсэн нь дараагийн хэсэгт түгжээтэй үлдэнэ.
+
+    Буцаах утга: (hold, шимтгэл). Ижил `key`-ээр давтан дуудахад эхний үр дүнг буцаана.
+    """
+    hold = _lock_hold(db, hold_id)
+    key = f"capture:{key}"
+    if tx := _existing_tx(db, key):
+        fee = sum(e.amount for e in tx.entries if e.account_id == SYSTEM_IDS[AccountKind.platform_revenue])
+        return hold, fee
+    if hold.status != HoldStatus.active:
+        raise LedgerError("hold_closed", "Түгжээ хаагдсан байна")
+    if fare < 0 or fare > hold.amount:
+        raise LedgerError("invalid_amount", "Төлбөр түгжсэн дүнгээс хэтэрч болохгүй")
+    driver_wallet_id = wallet_id(driver_user_id)
+    if driver_wallet_id == hold.account_id:
+        raise LedgerError("self_dealing", "Жолооч, зорчигч нэг хүн байж болохгүй")
+    if fare == 0:
+        return hold, 0
+    _ensure_wallet(db, driver_user_id)
+    _ensure_system(db, AccountKind.platform_revenue)
+    acc = _lock(db, [hold.account_id, driver_wallet_id, SYSTEM_IDS[AccountKind.platform_revenue]])
+    passenger = acc[hold.account_id]
+    fee = pricing.commission(fare, settings)
+    passenger.held -= fare
+    hold.amount -= fare
+    _post(
+        db,
+        TxKind.trip_settlement,
+        key,
+        hold.reference,
+        {passenger: -fare, acc[driver_wallet_id]: fare - fee, acc["platform_revenue"]: fee},
+    )
+    if hold.amount == 0:
+        hold.status = HoldStatus.settled
+        hold.closed_at = datetime.now(timezone.utc)
+    db.flush()
+    return hold, fee
+
+
 def request_payout(
     db: Session,
     user_id: str,

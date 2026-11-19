@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from .. import ledger
 from ..deps import AdminUser, Db
-from ..models import AuditLog, Document, DriverProfile, Payout, PayoutStatus, ReviewStatus, User, Vehicle
+from ..models import AuditLog, Booking, Document, DriverProfile, Payout, PayoutStatus, ReviewStatus, User, Vehicle
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -176,6 +176,22 @@ def close_payout(payout_id: str, body: PayoutResult, admin: AdminUser, db: Db) -
     db.add(AuditLog(actor_id=admin.id, action="close_payout", target=payout.id, detail=payout.status.value))
     db.commit()
     return {"status": payout.status.value}
+
+
+@router.get("/hop-suspects")
+def hop_suspects(admin: AdminUser, db: Db) -> list[dict]:
+    """Аянд буусан гэж дараад тэр машинаараа үргэлжлүүлсэн байж болзошгүй хэсгүүд."""
+    rows = db.scalars(select(Booking).where(Booking.hop_check == "suspect").order_by(Booking.completed_at.desc())).all()
+    return [
+        {
+            "booking_id": b.id,
+            "driver_id": b.driver_id,
+            "passenger_id": b.passenger_id,
+            "fare_total": b.fare_total,
+            "completed_at": b.completed_at.isoformat() if b.completed_at else None,
+        }
+        for b in rows
+    ]
 
 
 @router.get("/ledger/integrity")

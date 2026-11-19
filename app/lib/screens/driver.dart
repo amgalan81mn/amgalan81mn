@@ -285,7 +285,8 @@ class _DriverScreenState extends State<DriverScreen> {
         Card(
           child: ListTile(
             leading: const Icon(Icons.hail),
-            title: Text('${r['passenger_first_name'] ?? 'Зорчигч'} · ${r['seats']} хүн'),
+            title: Text('${r['passenger_first_name'] ?? 'Зорчигч'} · ${r['seats']} хүн'
+                '${r['multi_leg'] == true ? ' · замынхаа хэрээр дөхүүлнэ' : ''}'),
             subtitle: Text('${km(r['away_m'])} урдаа · хамт ${km(r['distance_m'])}\n'
                 'Санал: нэг хүн ${money(r['bid_seat_price'])} (таны үнэ ${money(r['ask_seat_price'])})'),
             isThreeLine: true,
