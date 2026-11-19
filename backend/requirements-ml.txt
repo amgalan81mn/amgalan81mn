@@ -1,0 +1,4 @@
+# Ухаалаг зураг таних загвар (DINOv2). Анх ажиллуулахад huggingface.co-оос ~350MB жин татна.
+-r requirements.txt
+torch>=2.5
+transformers>=4.47
